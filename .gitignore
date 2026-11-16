@@ -1,0 +1,10 @@
+*.dll
+*.exe
+*.cache
+*.vsidx
+/LuckyControl.TaxExport.Tests
+
+# Visual Studio / Build (HUB 5608)
+.vs/
+bin/
+obj/

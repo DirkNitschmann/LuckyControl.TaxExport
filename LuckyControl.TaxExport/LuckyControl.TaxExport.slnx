@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="LuckyControl.TaxExport.csproj" />
+  <Project Path="..\LuckyControl.TaxExport.Tests\LuckyControl.TaxExport.Tests.csproj" />
+</Solution>
