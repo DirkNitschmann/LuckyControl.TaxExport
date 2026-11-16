@@ -77,7 +77,7 @@ namespace LuckyControl.TaxExport.Infrastructure.Data {
     public sealed class DbReadException : InvalidOperationException {
         public IReadOnlyList<string> RowErrors { get; }
         public DbReadException(string what, IReadOnlyList<string> rowErrors)
-            : base($"{what}: {rowErrors.Count} Datensatz/Datensaetze nicht lesbar - Ergebnis waere unvollstaendig. " + string.Join(" | ", rowErrors)) {
+            : base($"{what}: {rowErrors.Count} Datensatz/Datensaetze nicht lesbar - Ergebnis waere unvollstaendig. " + string.Join(" | ", System.Linq.Enumerable.Take(rowErrors, 10)) + (rowErrors.Count > 10 ? " | ... (gekuerzt, alle in RowErrors)" : "")) {
             RowErrors = rowErrors;
         }
     }
