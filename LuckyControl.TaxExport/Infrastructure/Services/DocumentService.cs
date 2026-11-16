@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using LuckyControl.TaxExport.Domain.Entities;
 using LuckyControl.TaxExport.Domain.Queries;
+using LuckyControl.TaxExport.Infrastructure.Data;
 using LuckyControl.TaxExport.Properties;
 using Microsoft.Data.SqlClient;
 
@@ -65,15 +66,8 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             connection.ChangeDatabase(databaseName);
 
             var sql = ApplyPurchasePlaceholders(Resources.Sql_ReadPurchaseOrders, databaseName, query);
-            await using var command = new SqlCommand(sql, connection) { CommandTimeout = CommandTimeoutSeconds };
+            return await DbRead.ListAsync(connection, sql, null, MapPosition, "DocumentService.ReadPurchaseOrders", CommandTimeoutSeconds, cancellationToken);
 
-            var positions = new List<DocumentPosition>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            var map = new ColumnMap(reader);
-            while (await reader.ReadAsync(cancellationToken)) {
-                positions.Add(MapPosition(reader, map));
-            }
-            return positions;
         }
 
         private static void EnsureValidDatabaseName(string databaseName) {
@@ -90,16 +84,8 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             CancellationToken cancellationToken) {
             var sql = ApplyPlaceholders(sqlTemplate, databaseName, query);
 
-            await using var command = new SqlCommand(sql, connection) { CommandTimeout = CommandTimeoutSeconds };
-            AddParameters(command, query);
+            return await DbRead.ListAsync(connection, sql, p => AddParameters(p, query), MapPosition, "DocumentService.ReadDocumentPositions", CommandTimeoutSeconds, cancellationToken);
 
-            var positions = new List<DocumentPosition>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            var map = new ColumnMap(reader);
-            while (await reader.ReadAsync(cancellationToken)) {
-                positions.Add(MapPosition(reader, map));
-            }
-            return positions;
         }
 
         private static async Task<string> ReadWawiVersionAsync(
@@ -145,184 +131,149 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
                 .Replace("#cSuchbegriff#", (query.SearchTerm ?? string.Empty).Replace("'", "''"));
         }
 
-        private static void AddParameters(SqlCommand command, SalesInvoiceQuery query) {
+        private static void AddParameters(SqlParameterCollection parameters, SalesInvoiceQuery query) {
             // Date range — SQL casts via CONVERT(DATE, ..., 105). DateTime parameters work regardless of locale.
-            command.Parameters.Add("@dDatumStart", SqlDbType.DateTime).Value = query.StartDate;
-            command.Parameters.Add("@dDatumEnde", SqlDbType.DateTime).Value = query.EndDate.Date.AddDays(1).AddTicks(-1);
+            parameters.Add("@dDatumStart", SqlDbType.DateTime).Value = query.StartDate;
+            parameters.Add("@dDatumEnde", SqlDbType.DateTime).Value = query.EndDate.Date.AddDays(1).AddTicks(-1);
 
-            command.Parameters.Add("@nZahldatum", SqlDbType.Int).Value = query.FilterByPaymentDate ? 1 : 0;
-            command.Parameters.Add("@cSuchbegriff", SqlDbType.NVarChar, 255).Value = query.SearchTerm ?? string.Empty;
-            command.Parameters.Add("@nRegion", SqlDbType.Int).Value = (int)query.Region;
-            command.Parameters.Add("@nPosition", SqlDbType.Int).Value = (int)query.DifferentialTaxation;
-            command.Parameters.Add("@kFirma", SqlDbType.Int).Value = query.CompanyId;
-            command.Parameters.Add("@fMwSt", SqlDbType.Float).Value = query.VatRate.HasValue ? (object)(double)query.VatRate.Value : -1d;
+            parameters.Add("@nZahldatum", SqlDbType.Int).Value = query.FilterByPaymentDate ? 1 : 0;
+            parameters.Add("@cSuchbegriff", SqlDbType.NVarChar, 255).Value = query.SearchTerm ?? string.Empty;
+            parameters.Add("@nRegion", SqlDbType.Int).Value = (int)query.Region;
+            parameters.Add("@nPosition", SqlDbType.Int).Value = (int)query.DifferentialTaxation;
+            parameters.Add("@kFirma", SqlDbType.Int).Value = query.CompanyId;
+            parameters.Add("@fMwSt", SqlDbType.Float).Value = query.VatRate.HasValue ? (object)(double)query.VatRate.Value : -1d;
 
             // Post-processing flags — sensible defaults for a generic export.
-            command.Parameters.Add("@nBuchungskontoVersandkostenPositionAusMasse", SqlDbType.Int).Value = 0;
-            command.Parameters.Add("@nEKSteucklistenKomponentenAnwenden", SqlDbType.Int).Value = 0;
-            command.Parameters.Add("@nNullEuroPositionen", SqlDbType.Int).Value = 0;
-            command.Parameters.Add("@nStuecklistenfilter", SqlDbType.Int).Value = 0;
+            parameters.Add("@nBuchungskontoVersandkostenPositionAusMasse", SqlDbType.Int).Value = 0;
+            parameters.Add("@nEKSteucklistenKomponentenAnwenden", SqlDbType.Int).Value = 0;
+            parameters.Add("@nNullEuroPositionen", SqlDbType.Int).Value = 0;
+            parameters.Add("@nStuecklistenfilter", SqlDbType.Int).Value = 0;
         }
 
-        private static DocumentPosition MapPosition(SqlDataReader reader, ColumnMap map) {
+        private static DocumentPosition MapPosition(DbRow row) {
             return new DocumentPosition {
-                Type = map.GetString(reader, "Type"),
-                SalesOrderId = map.GetInt32(reader, "SalesOrderId"),
-                ExternalSalesOrderId = map.GetInt32(reader, "ExternalSalesOrderId"),
-                SalesInvoiceId = map.GetInt32(reader, "SalesInvoiceId"),
-                SalesInvoiceCorrectionId = map.GetInt32(reader, "SalesInvoiceCorrectionId"),
-                CustomerId = map.GetInt32(reader, "CustomerId"),
-                CompanyId = map.GetInt32(reader, "CompanyId"),
-                ProductId = map.GetInt32(reader, "ProductId"),
-                SakesOrderPositionId = map.GetInt32(reader, "SakesOrderPositionId"),
-                SalesOrderNumber = map.GetString(reader, "SalesOrderNumber"),
-                ExternalSalesOrderNumber = map.GetString(reader, "ExternalSalesOrderNumber"),
-                SalesInvoiceNumber = map.GetString(reader, "SalesInvoiceNumber"),
-                SalesInvoiceCorrectionNumber = map.GetString(reader, "SalesInvoiceCorrectionNumber"),
-                CustomerNumber = map.GetString(reader, "CustomerNumber"),
-                DebitorNumber = map.GetString(reader, "DebitorNumber"),
-                VatIdNumber = map.GetString(reader, "VatIdNumber"),
-                PlatformName = map.GetString(reader, "PlatformName"),
-                PaymentMethod = map.GetString(reader, "PaymentMethod"),
-                ShippingMethod = map.GetString(reader, "ShippingMethod"),
-                Status = map.GetString(reader, "Status"),
-                Comment1 = map.GetString(reader, "Comment1"),
-                Comment2 = map.GetString(reader, "Comment2"),
-                BookingAccount = map.GetString(reader, "BookingAccount"),
-                BookingAccountPaymentMethod = map.GetString(reader, "BookingAccountPaymentMethod"),
-                Currency = map.GetString(reader, "Currency"),
-                DepartmentCountry = map.GetString(reader, "DepartmentCountry"),
-                VatRate = map.GetDecimal(reader, "VatRate"),
-                CurrencyFactor = map.GetDecimal(reader, "CurrencyFactor"),
-                TotalPayd = map.GetDecimal(reader, "TotalPayd"),
-                IsDifferencialTaxation = map.GetInt32(reader, "IsDifferencialTaxation") == 1,
-                IsEU = map.GetInt32(reader, "IsEU") == 1,
-                IsIGL = map.GetInt32(reader, "IsIGL") == 1,
-                PositionTypeId = map.GetInt32(reader, "PositionTypeId"),
-                SortNumber = map.GetInt32(reader, "SortNumber"),
-                Sku = map.GetString(reader, "Sku"),
-                Name = map.GetString(reader, "Name"),
-                Quantity = map.GetDecimal(reader, "Quantity"),
-                NetPurchasingPrice = map.GetDecimal(reader, "NetPurchasingPrice"),
-                TotalNetPurchasingPrice = map.GetDecimal(reader, "TotalNetPurchasingPrice"),
-                NetPrice = map.GetDecimal(reader, "NetPrice"),
-                TotalNetPrice = map.GetDecimal(reader, "TotalNetPrice"),
-                GrossPrice = map.GetDecimal(reader, "GrossPrice"),
-                TotalGrossPrice = map.GetDecimal(reader, "TotalGrossPrice"),
-                NetPriceInBaseCurrency = map.GetDecimal(reader, "NetPriceInBaseCurrency"),
-                TotalNetPriceInBaseCurrency = map.GetDecimal(reader, "TotalNetPriceInBaseCurrency"),
-                GrossPriceInBaseCurrency = map.GetDecimal(reader, "GrossPriceInBaseCurrency"),
-                TotalGrossPriceInBaseCurrency = map.GetDecimal(reader, "TotalGrossPriceInBaseCurrency"),
-                CompanyName = map.GetString(reader, "CompanyName"),
-                CompanyCeo = map.GetString(reader, "CompanyCeo"),
-                CompanyStreet = map.GetString(reader, "CompanyStreet"),
-                CompanyPostalCode = map.GetString(reader, "CompanyPostalCode"),
-                CompanyCity = map.GetString(reader, "CompanyCity"),
-                CompanyCountry = map.GetString(reader, "CompanyCountry"),
-                CompanyHomepage = map.GetString(reader, "CompanyHomepage"),
-                CompanyEmail = map.GetString(reader, "CompanyEmail"),
-                CompanyBankName = map.GetString(reader, "CompanyBankName"),
-                CompanyAccountNumber = map.GetString(reader, "CompanyAccountNumber"),
-                CompanyBankCode = map.GetString(reader, "CompanyBankCode"),
-                CompanyIban = map.GetString(reader, "CompanyIban"),
-                CompanyBic = map.GetString(reader, "CompanyBic"),
-                CompanyTaxNumber = map.GetString(reader, "CompanyTaxNumber"),
-                CompanyCreditorId = map.GetString(reader, "CompanyCreditorId"),
-                InvoiceAddressSalutation = map.GetString(reader, "InvoiceAddressSalutation"),
-                InvoiceAddressCompanyName = map.GetString(reader, "InvoiceAddressCompanyName"),
-                InvoiceAddressFirstName = map.GetString(reader, "InvoiceAddressFirstName"),
-                InvoiceAddressLastName = map.GetString(reader, "InvoiceAddressLastName"),
-                InvoiceAddressStreet = map.GetString(reader, "InvoiceAddressStreet"),
-                InvoiceAddressPostalCode = map.GetString(reader, "InvoiceAddressPostalCode"),
-                InvoiceAddressCity = map.GetString(reader, "InvoiceAddressCity"),
-                InvoiceAddressFederalState = map.GetString(reader, "InvoiceAddressFederalState"),
-                InvoiceAddressCountry = map.GetString(reader, "InvoiceAddressCountry"),
-                InvoiceAddressPhone = map.GetString(reader, "InvoiceAddressPhone"),
-                InvoiceAddressFax = map.GetString(reader, "InvoiceAddressFax"),
-                InvoiceAddressMobile = map.GetString(reader, "InvoiceAddressMobile"),
-                InvoiceAddressEmail = map.GetString(reader, "InvoiceAddressEmail"),
-                ShippingAddressSalutation = map.GetString(reader, "ShippingAddressSalutation"),
-                ShippingAddressCompanyName = map.GetString(reader, "ShippingAddressCompanyName"),
-                ShippingAddressFirstName = map.GetString(reader, "ShippingAddressFirstName"),
-                ShippingAddressLastName = map.GetString(reader, "ShippingAddressLastName"),
-                ShippingAddressStreet = map.GetString(reader, "ShippingAddressStreet"),
-                ShippingAddressPostalCode = map.GetString(reader, "ShippingAddressPostalCode"),
-                ShippingAddressCity = map.GetString(reader, "ShippingAddressCity"),
-                ShippingAddressFederalState = map.GetString(reader, "ShippingAddressFederalState"),
-                ShippingAddressCountry = map.GetString(reader, "ShippingAddressCountry"),
-                ShippingAddressCountryIso = map.GetString(reader, "ShippingAddressCountryIso"),
-                ShippingAddressPhone = map.GetString(reader, "ShippingAddressPhone"),
-                ShippingAddressFax = map.GetString(reader, "ShippingAddressFax"),
-                ShippingAddressMobile = map.GetString(reader, "ShippingAddressMobile"),
-                ShippingAddressEmail = map.GetString(reader, "ShippingAddressEmail"),
-                SerialNumbers = map.GetString(reader, "SerialNumbers"),
-                BatchNumbers = map.GetString(reader, "BatchNumbers"),
-                PositionComment = map.GetString(reader, "PositionComment"),
-                CreatedAt = map.GetDateTime(reader, "CreatedAt") ?? default,
-                SalesOrderDate = map.GetDateTime(reader, "SalesOrderDate"),
-                SalesInvoiceDate = map.GetDateTime(reader, "SalesInvoiceDate"),
-                ShippedAt = map.GetDateTime(reader, "ShippedAt"),
-                PaydAt = map.GetDateTime(reader, "PaydAt"),
-                ShppingDate = map.GetDateTime(reader, "ShppingDate"),
-                IsReverseCharge = map.GetInt32(reader, "IsReverseCharge") == 1,
-                PurchaseOrderId = map.GetInt32(reader, "PurchaseOrderId"),
-                SupplierId = map.GetInt32(reader, "SupplierId"),
-                PurchaseOrderNumber = map.GetString(reader, "PurchaseOrderNumber"),
-                PurchaseReferenceOrderNumber = map.GetString(reader, "PurchaseReferenceOrderNumber"),
-                PurchaseExternalDocumentNumber = map.GetString(reader, "PurchaseExternalDocumentNumber"),
-                SupplierNumber = map.GetString(reader, "SupplierNumber"),
-                SupplierCompanyName = map.GetString(reader, "SupplierCompanyName"),
-                SupplierCompanyNameAddition = map.GetString(reader, "SupplierCompanyNameAddition"),
-                SupplierSalutation = map.GetString(reader, "SupplierSalutation"),
-                SupplierFirstName = map.GetString(reader, "SupplierFirstName"),
-                SupplierLastName = map.GetString(reader, "SupplierLastName"),
-                SupplierStreet = map.GetString(reader, "SupplierStreet"),
-                SupplierPostalCode = map.GetString(reader, "SupplierPostalCode"),
-                SupplierCity = map.GetString(reader, "SupplierCity"),
-                SupplierFederalState = map.GetString(reader, "SupplierFederalState"),
-                SupplierCountry = map.GetString(reader, "SupplierCountry"),
-                SupplierPhone = map.GetString(reader, "SupplierPhone"),
-                SupplierFax = map.GetString(reader, "SupplierFax"),
-                SupplierEmail = map.GetString(reader, "SupplierEmail"),
-                SupplierHomepage = map.GetString(reader, "SupplierHomepage"),
-                SupplierVatIdNumber = map.GetString(reader, "SupplierVatIdNumber"),
-                DifferentialTaxationMode = map.GetInt32(reader, "DifferentialTaxationMode")
+                Type = row.StringOrEmpty("Type"),
+                SalesOrderId = row.Int32OrZero("SalesOrderId"),
+                ExternalSalesOrderId = row.Int32OrZero("ExternalSalesOrderId"),
+                SalesInvoiceId = row.Int32OrZero("SalesInvoiceId"),
+                SalesInvoiceCorrectionId = row.Int32OrZero("SalesInvoiceCorrectionId"),
+                CustomerId = row.Int32OrZero("CustomerId"),
+                CompanyId = row.Int32OrZero("CompanyId"),
+                ProductId = row.Int32OrZero("ProductId"),
+                SakesOrderPositionId = row.Int32OrZero("SakesOrderPositionId"),
+                SalesOrderNumber = row.StringOrEmpty("SalesOrderNumber"),
+                ExternalSalesOrderNumber = row.StringOrEmpty("ExternalSalesOrderNumber"),
+                SalesInvoiceNumber = row.StringOrEmpty("SalesInvoiceNumber"),
+                SalesInvoiceCorrectionNumber = row.StringOrEmpty("SalesInvoiceCorrectionNumber"),
+                CustomerNumber = row.StringOrEmpty("CustomerNumber"),
+                DebitorNumber = row.StringOrEmpty("DebitorNumber"),
+                VatIdNumber = row.StringOrEmpty("VatIdNumber"),
+                PlatformName = row.StringOrEmpty("PlatformName"),
+                PaymentMethod = row.StringOrEmpty("PaymentMethod"),
+                ShippingMethod = row.StringOrEmpty("ShippingMethod"),
+                Status = row.StringOrEmpty("Status"),
+                Comment1 = row.StringOrEmpty("Comment1"),
+                Comment2 = row.StringOrEmpty("Comment2"),
+                BookingAccount = row.StringOrEmpty("BookingAccount"),
+                BookingAccountPaymentMethod = row.StringOrEmpty("BookingAccountPaymentMethod"),
+                Currency = row.StringOrEmpty("Currency"),
+                DepartmentCountry = row.StringOrEmpty("DepartmentCountry"),
+                VatRate = row.DecimalOrZero("VatRate"),
+                CurrencyFactor = row.DecimalOrZero("CurrencyFactor"),
+                TotalPayd = row.DecimalOrZero("TotalPayd"),
+                IsDifferencialTaxation = row.Int32OrZero("IsDifferencialTaxation") == 1,
+                IsEU = row.Int32OrZero("IsEU") == 1,
+                IsIGL = row.Int32OrZero("IsIGL") == 1,
+                PositionTypeId = row.Int32OrZero("PositionTypeId"),
+                SortNumber = row.Int32OrZero("SortNumber"),
+                Sku = row.StringOrEmpty("Sku"),
+                Name = row.StringOrEmpty("Name"),
+                Quantity = row.DecimalOrZero("Quantity"),
+                NetPurchasingPrice = row.DecimalOrZero("NetPurchasingPrice"),
+                TotalNetPurchasingPrice = row.DecimalOrZero("TotalNetPurchasingPrice"),
+                NetPrice = row.DecimalOrZero("NetPrice"),
+                TotalNetPrice = row.DecimalOrZero("TotalNetPrice"),
+                GrossPrice = row.DecimalOrZero("GrossPrice"),
+                TotalGrossPrice = row.DecimalOrZero("TotalGrossPrice"),
+                NetPriceInBaseCurrency = row.DecimalOrZero("NetPriceInBaseCurrency"),
+                TotalNetPriceInBaseCurrency = row.DecimalOrZero("TotalNetPriceInBaseCurrency"),
+                GrossPriceInBaseCurrency = row.DecimalOrZero("GrossPriceInBaseCurrency"),
+                TotalGrossPriceInBaseCurrency = row.DecimalOrZero("TotalGrossPriceInBaseCurrency"),
+                CompanyName = row.StringOrEmpty("CompanyName"),
+                CompanyCeo = row.StringOrEmpty("CompanyCeo"),
+                CompanyStreet = row.StringOrEmpty("CompanyStreet"),
+                CompanyPostalCode = row.StringOrEmpty("CompanyPostalCode"),
+                CompanyCity = row.StringOrEmpty("CompanyCity"),
+                CompanyCountry = row.StringOrEmpty("CompanyCountry"),
+                CompanyHomepage = row.StringOrEmpty("CompanyHomepage"),
+                CompanyEmail = row.StringOrEmpty("CompanyEmail"),
+                CompanyBankName = row.StringOrEmpty("CompanyBankName"),
+                CompanyAccountNumber = row.StringOrEmpty("CompanyAccountNumber"),
+                CompanyBankCode = row.StringOrEmpty("CompanyBankCode"),
+                CompanyIban = row.StringOrEmpty("CompanyIban"),
+                CompanyBic = row.StringOrEmpty("CompanyBic"),
+                CompanyTaxNumber = row.StringOrEmpty("CompanyTaxNumber"),
+                CompanyCreditorId = row.StringOrEmpty("CompanyCreditorId"),
+                InvoiceAddressSalutation = row.StringOrEmpty("InvoiceAddressSalutation"),
+                InvoiceAddressCompanyName = row.StringOrEmpty("InvoiceAddressCompanyName"),
+                InvoiceAddressFirstName = row.StringOrEmpty("InvoiceAddressFirstName"),
+                InvoiceAddressLastName = row.StringOrEmpty("InvoiceAddressLastName"),
+                InvoiceAddressStreet = row.StringOrEmpty("InvoiceAddressStreet"),
+                InvoiceAddressPostalCode = row.StringOrEmpty("InvoiceAddressPostalCode"),
+                InvoiceAddressCity = row.StringOrEmpty("InvoiceAddressCity"),
+                InvoiceAddressFederalState = row.StringOrEmpty("InvoiceAddressFederalState"),
+                InvoiceAddressCountry = row.StringOrEmpty("InvoiceAddressCountry"),
+                InvoiceAddressPhone = row.StringOrEmpty("InvoiceAddressPhone"),
+                InvoiceAddressFax = row.StringOrEmpty("InvoiceAddressFax"),
+                InvoiceAddressMobile = row.StringOrEmpty("InvoiceAddressMobile"),
+                InvoiceAddressEmail = row.StringOrEmpty("InvoiceAddressEmail"),
+                ShippingAddressSalutation = row.StringOrEmpty("ShippingAddressSalutation"),
+                ShippingAddressCompanyName = row.StringOrEmpty("ShippingAddressCompanyName"),
+                ShippingAddressFirstName = row.StringOrEmpty("ShippingAddressFirstName"),
+                ShippingAddressLastName = row.StringOrEmpty("ShippingAddressLastName"),
+                ShippingAddressStreet = row.StringOrEmpty("ShippingAddressStreet"),
+                ShippingAddressPostalCode = row.StringOrEmpty("ShippingAddressPostalCode"),
+                ShippingAddressCity = row.StringOrEmpty("ShippingAddressCity"),
+                ShippingAddressFederalState = row.StringOrEmpty("ShippingAddressFederalState"),
+                ShippingAddressCountry = row.StringOrEmpty("ShippingAddressCountry"),
+                ShippingAddressCountryIso = row.StringOrEmpty("ShippingAddressCountryIso"),
+                ShippingAddressPhone = row.StringOrEmpty("ShippingAddressPhone"),
+                ShippingAddressFax = row.StringOrEmpty("ShippingAddressFax"),
+                ShippingAddressMobile = row.StringOrEmpty("ShippingAddressMobile"),
+                ShippingAddressEmail = row.StringOrEmpty("ShippingAddressEmail"),
+                SerialNumbers = row.StringOrEmpty("SerialNumbers"),
+                BatchNumbers = row.StringOrEmpty("BatchNumbers"),
+                PositionComment = row.StringOrEmpty("PositionComment"),
+                CreatedAt = row.DateTimeOrNull("CreatedAt") ?? default,
+                SalesOrderDate = row.DateTimeOrNull("SalesOrderDate"),
+                SalesInvoiceDate = row.DateTimeOrNull("SalesInvoiceDate"),
+                ShippedAt = row.DateTimeOrNull("ShippedAt"),
+                PaydAt = row.DateTimeOrNull("PaydAt"),
+                ShppingDate = row.DateTimeOrNull("ShppingDate"),
+                IsReverseCharge = row.Int32OrZero("IsReverseCharge") == 1,
+                PurchaseOrderId = row.Int32OrZero("PurchaseOrderId"),
+                SupplierId = row.Int32OrZero("SupplierId"),
+                PurchaseOrderNumber = row.StringOrEmpty("PurchaseOrderNumber"),
+                PurchaseReferenceOrderNumber = row.StringOrEmpty("PurchaseReferenceOrderNumber"),
+                PurchaseExternalDocumentNumber = row.StringOrEmpty("PurchaseExternalDocumentNumber"),
+                SupplierNumber = row.StringOrEmpty("SupplierNumber"),
+                SupplierCompanyName = row.StringOrEmpty("SupplierCompanyName"),
+                SupplierCompanyNameAddition = row.StringOrEmpty("SupplierCompanyNameAddition"),
+                SupplierSalutation = row.StringOrEmpty("SupplierSalutation"),
+                SupplierFirstName = row.StringOrEmpty("SupplierFirstName"),
+                SupplierLastName = row.StringOrEmpty("SupplierLastName"),
+                SupplierStreet = row.StringOrEmpty("SupplierStreet"),
+                SupplierPostalCode = row.StringOrEmpty("SupplierPostalCode"),
+                SupplierCity = row.StringOrEmpty("SupplierCity"),
+                SupplierFederalState = row.StringOrEmpty("SupplierFederalState"),
+                SupplierCountry = row.StringOrEmpty("SupplierCountry"),
+                SupplierPhone = row.StringOrEmpty("SupplierPhone"),
+                SupplierFax = row.StringOrEmpty("SupplierFax"),
+                SupplierEmail = row.StringOrEmpty("SupplierEmail"),
+                SupplierHomepage = row.StringOrEmpty("SupplierHomepage"),
+                SupplierVatIdNumber = row.StringOrEmpty("SupplierVatIdNumber"),
+                DifferentialTaxationMode = row.Int32OrZero("DifferentialTaxationMode")
             };
-        }
-
-        // Caches column ordinals so we resolve column names once per result set, not per row.
-        private sealed class ColumnMap {
-            private readonly Dictionary<string, int> _ordinals;
-
-            public ColumnMap(SqlDataReader reader) {
-                _ordinals = new Dictionary<string, int>(reader.FieldCount, StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < reader.FieldCount; i++) {
-                    _ordinals[reader.GetName(i)] = i;
-                }
-            }
-
-            // Missing-column lookups return defaults rather than throwing — the same DocumentPosition
-            // model is populated from differently-shaped SQL templates (sales / credit notes / purchase),
-            // and not every template emits every column.
-            public string GetString(SqlDataReader reader, string column) {
-                if (!_ordinals.TryGetValue(column, out var ordinal)) return string.Empty;
-                return reader.IsDBNull(ordinal) ? string.Empty : reader.GetValue(ordinal).ToString() ?? string.Empty;
-            }
-
-            public int GetInt32(SqlDataReader reader, string column) {
-                if (!_ordinals.TryGetValue(column, out var ordinal)) return 0;
-                return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt32(reader.GetValue(ordinal));
-            }
-
-            public decimal GetDecimal(SqlDataReader reader, string column) {
-                if (!_ordinals.TryGetValue(column, out var ordinal)) return 0m;
-                return reader.IsDBNull(ordinal) ? 0m : Convert.ToDecimal(reader.GetValue(ordinal));
-            }
-
-            public DateTime? GetDateTime(SqlDataReader reader, string column) {
-                if (!_ordinals.TryGetValue(column, out var ordinal)) return null;
-                return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
-            }
         }
     }
 }

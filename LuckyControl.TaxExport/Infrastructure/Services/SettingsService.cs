@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using LuckyControl.TaxExport.Domain.Entities;
+using LuckyControl.TaxExport.Infrastructure.Data;
 using LuckyControl.TaxExport.Properties;
 using Microsoft.Data.SqlClient;
 
@@ -66,13 +67,10 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             string databaseName = DefaultDatabaseName,
             CancellationToken cancellationToken = default) {
             await using var connection = await OpenConnectionAsync(connectionString, databaseName, cancellationToken);
-            await using var command = new SqlCommand(
+            return await DbRead.FirstOrDefaultAsync(connection,
                 @"SELECT kEinstellung, kBenutzer, cTyp, cComputername, cName, cWert, dErstellt
                   FROM dbo.em_tEinstellung WHERE kEinstellung = @id",
-                connection) { CommandTimeout = CommandTimeoutSeconds };
-            command.Parameters.Add("@id", SqlDbType.Int).Value = id;
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            return await reader.ReadAsync(cancellationToken) ? MapBase(reader) : null;
+                p => p.Add("@id", SqlDbType.Int).Value = id, MapBase, "SettingsService.ReadBaseSetting", CommandTimeoutSeconds, cancellationToken);
         }
 
         public async Task<int> CreateBaseSettingAsync(
@@ -140,14 +138,11 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             string databaseName = DefaultDatabaseName,
             CancellationToken cancellationToken = default) {
             await using var connection = await OpenConnectionAsync(connectionString, databaseName, cancellationToken);
-            await using var command = new SqlCommand(
+            return await DbRead.FirstOrDefaultAsync(connection,
                 @"SELECT kSteuerEinstellung, cDB, kFirma, kSteuerklasse, kSteuerschlussel,
                          cFirma, cSteuerklasse, cSteuerschlussel, dErstellt
                   FROM dbo.em_tSteuerEinstellung WHERE kSteuerEinstellung = @id",
-                connection) { CommandTimeout = CommandTimeoutSeconds };
-            command.Parameters.Add("@id", SqlDbType.Int).Value = id;
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            return await reader.ReadAsync(cancellationToken) ? MapTax(reader) : null;
+                p => p.Add("@id", SqlDbType.Int).Value = id, MapTax, "SettingsService.ReadTaxSetting", CommandTimeoutSeconds, cancellationToken);
         }
 
         public async Task<int> CreateTaxSettingAsync(
@@ -217,13 +212,10 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             string databaseName = DefaultDatabaseName,
             CancellationToken cancellationToken = default) {
             await using var connection = await OpenConnectionAsync(connectionString, databaseName, cancellationToken);
-            await using var command = new SqlCommand(
+            return await DbRead.FirstOrDefaultAsync(connection,
                 @"SELECT kExportVorlage, nTyp, cTyp, cName, cDateiName, cDateiPfad, cFormat, cQuellcode, dErstellt
                   FROM dbo.em_tExportVorlage WHERE kExportVorlage = @id",
-                connection) { CommandTimeout = CommandTimeoutSeconds };
-            command.Parameters.Add("@id", SqlDbType.Int).Value = id;
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            return await reader.ReadAsync(cancellationToken) ? MapTemplate(reader) : null;
+                p => p.Add("@id", SqlDbType.Int).Value = id, MapTemplate, "SettingsService.ReadExportTemplate", CommandTimeoutSeconds, cancellationToken);
         }
 
         public async Task<int> CreateExportTemplateAsync(
@@ -313,13 +305,7 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             SqlConnection connection, CancellationToken cancellationToken) {
             const string sql = @"SELECT kEinstellung, kBenutzer, cTyp, cComputername, cName, cWert, dErstellt
                                  FROM dbo.em_tEinstellung";
-            await using var command = new SqlCommand(sql, connection) { CommandTimeout = CommandTimeoutSeconds };
-            var list = new List<BaseSetting>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken)) {
-                list.Add(MapBase(reader));
-            }
-            return list;
+            return await DbRead.ListAsync(connection, sql, null, MapBase, "SettingsService.ReadBaseSettings", CommandTimeoutSeconds, cancellationToken);
         }
 
         private static async Task<List<TaxSetting>> ReadTaxSettingsCoreAsync(
@@ -327,13 +313,7 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             const string sql = @"SELECT kSteuerEinstellung, cDB, kFirma, kSteuerklasse, kSteuerschlussel,
                                         cFirma, cSteuerklasse, cSteuerschlussel, dErstellt
                                  FROM dbo.em_tSteuerEinstellung";
-            await using var command = new SqlCommand(sql, connection) { CommandTimeout = CommandTimeoutSeconds };
-            var list = new List<TaxSetting>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken)) {
-                list.Add(MapTax(reader));
-            }
-            return list;
+            return await DbRead.ListAsync(connection, sql, null, MapTax, "SettingsService.ReadTaxSettings", CommandTimeoutSeconds, cancellationToken);
         }
 
         private static async Task<List<ExportTemplate>> ReadExportTemplatesCoreAsync(
@@ -341,47 +321,42 @@ namespace LuckyControl.TaxExport.Infrastructure.Services {
             const string sql = @"SELECT kExportVorlage, nTyp, cTyp, cName, cDateiName, cDateiPfad,
                                         cFormat, cQuellcode, dErstellt
                                  FROM dbo.em_tExportVorlage";
-            await using var command = new SqlCommand(sql, connection) { CommandTimeout = CommandTimeoutSeconds };
-            var list = new List<ExportTemplate>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken)) {
-                list.Add(MapTemplate(reader));
-            }
-            return list;
+            return await DbRead.ListAsync(connection, sql, null, MapTemplate, "SettingsService.ReadExportTemplates", CommandTimeoutSeconds, cancellationToken);
         }
 
-        private static BaseSetting MapBase(SqlDataReader reader) => new() {
-            Id = reader.GetInt32(0),
-            UserId = reader.GetInt32(1),
-            Type = reader.GetString(2),
-            ComputerName = reader.GetString(3),
-            Name = reader.GetString(4),
-            Value = reader.GetString(5),
-            CreatedAt = reader.GetDateTime(6)
+        // Spalten per Index wie bisher (reader.GetXxx(i)): NULL in einer Pflichtspalte ist ein Fehler des Datensatzes.
+        private static BaseSetting MapBase(DbRow row) => new() {
+            Id = row.Int32(0),
+            UserId = row.Int32(1),
+            Type = row.String(2),
+            ComputerName = row.String(3),
+            Name = row.String(4),
+            Value = row.String(5),
+            CreatedAt = row.DateTime(6)
         };
 
-        private static TaxSetting MapTax(SqlDataReader reader) => new() {
-            Id = reader.GetInt32(0),
-            DataBaseName = reader.GetString(1),
-            CompanyId = reader.GetInt32(2),
-            TaxClassId = reader.GetInt32(3),
-            TaxKeyId = reader.GetInt32(4),
-            CompanyName = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-            TaxClassName = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
-            TaxKeyName = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
-            CreatedAt = reader.GetDateTime(8)
+        private static TaxSetting MapTax(DbRow row) => new() {
+            Id = row.Int32(0),
+            DataBaseName = row.String(1),
+            CompanyId = row.Int32(2),
+            TaxClassId = row.Int32(3),
+            TaxKeyId = row.Int32(4),
+            CompanyName = row.StringOrEmpty(5),
+            TaxClassName = row.StringOrEmpty(6),
+            TaxKeyName = row.StringOrEmpty(7),
+            CreatedAt = row.DateTime(8)
         };
 
-        private static ExportTemplate MapTemplate(SqlDataReader reader) => new() {
-            Id = reader.GetInt32(0),
-            TypeId = reader.GetInt32(1),
-            Type = reader.GetString(2),
-            Name = reader.GetString(3),
-            FileName = reader.GetString(4),
-            FilePath = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-            FileExtension = reader.GetString(6),
-            TemplateValue = reader.GetString(7),
-            CreatedAt = reader.GetDateTime(8)
+        private static ExportTemplate MapTemplate(DbRow row) => new() {
+            Id = row.Int32(0),
+            TypeId = row.Int32(1),
+            Type = row.String(2),
+            Name = row.String(3),
+            FileName = row.String(4),
+            FilePath = row.StringOrEmpty(5),
+            FileExtension = row.String(6),
+            TemplateValue = row.String(7),
+            CreatedAt = row.DateTime(8)
         };
 
         private static void BindBaseParameters(SqlCommand command, BaseSetting setting) {

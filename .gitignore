@@ -8,3 +8,6 @@
 .vs/
 bin/
 obj/
+
+# Lokale Testverbindung - nie committen
+testsettings.local.json

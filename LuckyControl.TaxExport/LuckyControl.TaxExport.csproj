@@ -11,6 +11,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Tests der Lese-Klasse DbRead (HUB 5608) -->
+    <InternalsVisibleTo Include="LuckyControl.TaxExport.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Update="Properties\Resources.Designer.cs">
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>
